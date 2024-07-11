@@ -81,6 +81,10 @@ struct proc_struct *initproc = NULL;
 // current proc
 struct proc_struct *current = NULL;
 
+// LAB9 son_proc
+struct proc_struct *son_proc = NULL;
+
+
 static int nr_process = 0;
 
 void kernel_thread_entry(void);
@@ -1211,9 +1215,17 @@ static int kernel_execve(const char *name, const char **argv) {
 static int
 user_main(void *arg) {
 #ifdef LAB8_EX2
+    // KERNEL_EXECVE(lab_proc);
+    KERNEL_EXECVE(test);
     KERNEL_EXECVE(sh);
+
 #else
+    KERNEL_EXECVE(hello);
+
+    // KERNEL_EXECVE(lab_proc);
+
     KERNEL_EXECVE(exit);
+
 #endif
     panic("user_main execve failed.\n");
 }

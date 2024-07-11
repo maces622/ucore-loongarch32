@@ -96,7 +96,7 @@ ifeq ($(ON_FPGA), y)
 	USER_APPLIST:= sh ls cat
 	INITRD_BLOCK_CNT:=700 
 else
-	USER_APPLIST:= pwd cat sh ls forktest yield hello faultreadkernel faultread badarg waitkill pgdir exit sleep echo spin forktree
+	USER_APPLIST:= pwd cat sh ls forktest yield hello faultreadkernel faultread badarg waitkill pgdir exit sleep echo spin forktree test
 	INITRD_BLOCK_CNT:=4000
 endif
 

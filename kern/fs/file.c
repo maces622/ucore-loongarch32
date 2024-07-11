@@ -11,6 +11,9 @@
 #include <error.h>
 #include <assert.h>
 
+#define MIN(x,y) (((x)<(y))?(x):(y))
+
+
 #define testfd(fd)                          ((fd) >= 0 && (fd) < FS_STRUCT_NENTRY)
 
 static struct file *
@@ -336,3 +339,97 @@ file_dup(int fd1, int fd2) {
 }
 
 
+int pipealloc(struct file *f0, struct file *f1)
+{
+    // 这里没有用预分配，由于 pipe 比较大，直接拿一个页过来，也不算太浪费
+    struct pipe *pi = (struct pipe*)alloc_page();
+    // 一开始 pipe 可读可写，但是已读和已写内容为 0
+    pi->readopen = 1;
+    pi->writeopen = 1;
+    pi->nwrite = 0;
+    pi->nread = 0;
+
+    // 两个参数分别通过 filealloc 得到，把该 pipe 和这两个文件关连，一端可读，一端可写。读写端控制是 sys_pipe 的要求。
+    f0->status = FD_PIPE;
+    f0->readable = 1;
+    f0->writable = 0;
+    f0->pipe = pi;
+
+    f1->status = FD_PIPE;
+    f1->readable = 0;
+    f1->writable = 1;
+    f1->pipe = pi;
+    return 0;
+}
+
+void pipeclose(struct pipe *pi, int writable)
+{
+    if(writable){
+        pi->writeopen = 0;
+    } else {
+        pi->readopen = 0;
+    }
+    if(pi->readopen == 0 && pi->writeopen == 0){
+        kfree((char*)pi);
+    }
+}
+
+int pipewrite(struct pipe *pi, uint64_t addr, int n)
+{
+    // w 记录已经写的字节数
+    int w = 0;
+    while(w < n){
+        // 若不可读，写也没有意义
+        if(pi->readopen == 0){
+            return -1;
+        }
+        struct mm_struct *p_mm=current->mm;  
+        if(pi->nwrite == pi->nread + PIPESIZE){
+            // pipe write 端已满，阻塞
+            do_yield();
+        } else {
+            // 一次读的 size 为 min(用户buffer剩余，pipe 剩余写容量，pipe 剩余线性容量)
+            uint64_t size =MIN(MIN(
+                n - w,
+                pi->nread + PIPESIZE - pi->nwrite),
+                PIPESIZE - (pi->nwrite % PIPESIZE));
+            // 使用 copyin 读入用户 buffer 内容
+            copy_from_user(p_mm->pgdir, addr + w,&pi->data[pi->nwrite % PIPESIZE], size,1);
+            pi->nwrite += size;
+            w += size;
+        }
+    }
+    return w;
+}
+
+int piperead(struct pipe *pi, uint64_t addr, int n)
+{
+    // r 记录已经写的字节数
+    int r = 0;
+    // 若 pipe 可读内容为空，阻塞或者报错
+    while(pi->nread == pi->nwrite) {
+        if(pi->writeopen)
+            do_yield();
+        else
+            return -1;
+    }
+    struct mm_struct *p_mm=current->mm;  
+    uint64_t size = MIN(MIN(n - r,pi->nwrite - pi->nread),
+            PIPESIZE - (pi->nread % PIPESIZE));
+    while(r < n && size != 0) {
+        // pipe 可读内容为空，返回
+        
+        if(pi->nread == pi->nwrite)
+            break;
+        // 一次写的 size 为：min(用户buffer剩余，可读内容，pipe剩余线性容量)
+        uint64_t size = MIN(
+            MIN(n - r,pi->nwrite - pi->nread),
+            PIPESIZE - (pi->nread % PIPESIZE)
+        );
+        // 使用 copyout 写用户内存
+        copy_to_user(p_mm->pgdir,  &pi->data[pi->nread % PIPESIZE],addr + r, size);
+        pi->nread += size;
+        r += size;
+    }
+    return r;
+}

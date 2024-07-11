@@ -8,6 +8,7 @@
 #include <stat.h>
 #include <dirent.h>
 #include <sysfile.h>
+#include <file.h>
 
 extern volatile int ticks;
 
@@ -168,6 +169,23 @@ sys_dup(uint32_t arg[]) {
     return sysfile_dup(fd1, fd2);
 }
 
+static int
+sys_pipe(int fdarray) {
+    // 申请两个空 file
+    struct file* f0 = file_open("f0_pipe",O_RDWR);
+    struct file* f1 = file_open("f1_pipe",O_RDWR);
+    // 实际分配一个 pipe，与两个文件关联
+    pipealloc(f0, f1);
+    // // 分配两个 fd，并将之与 文件指针关联
+    int fd0 = f0->fd;
+    int fd1 = f1->fd;
+    struct mm_struct *p_mm=current->mm;  
+
+    size_t PSIZE = sizeof(fd0);
+    copy_to_user(p_mm->pgdir, fdarray, &fd0, sizeof(f0));
+    copy_to_user(p_mm->pgdir, fdarray + sizeof(uint64_t), &fd1, sizeof(f0));
+    return 0;
+}
 
 static int (*syscalls[])(uint32_t arg[]) = {
   [SYS_exit]              sys_exit,
@@ -191,6 +209,7 @@ static int (*syscalls[])(uint32_t arg[]) = {
   [SYS_getcwd]            sys_getcwd,
   [SYS_getdirentry]       sys_getdirentry,
   [SYS_dup]               sys_dup,
+  [SYS_pipe]              sys_pipe, //pipe sys call
 };
 
 #define NUM_SYSCALLS        ((sizeof(syscalls)) / (sizeof(syscalls[0])))

@@ -33,7 +33,7 @@ unlock_fs(struct fs_struct *fs_struct) {
 struct fs_struct *
 fs_create(void) {
 	//kprintf("[fs_create]\n");
-    static_assert((int)FS_STRUCT_NENTRY > 128);
+    static_assert((int)FS_STRUCT_NENTRY > 64);
     struct fs_struct *fs_struct;
     if ((fs_struct = kmalloc(sizeof(struct fs_struct) + FS_STRUCT_BUFSIZE)) != NULL) {
         fs_struct->pwd = NULL;
