@@ -17,6 +17,12 @@
 #include <sysfile.h>
 #include <loongarch_trapframe.h>
 #include <loongarch.h>
+#define MIN3(a, b, c) ({ \
+    typeof(a) _a = (a); \
+    typeof(b) _b = (b); \
+    typeof(c) _c = (c); \
+    (_a < _b) ? (_a < _c ? _a : _c) : (_b < _c ? _b : _c); \
+})
 
 /* ------------- process/thread mechanism design&implementation -------------
 (an simplified Linux process/thread mechanism )
@@ -66,7 +72,7 @@ SYS_getpid      : get the process's pid
 
 // the process set's list
 list_entry_t proc_list;
-
+char* buffer = NULL;
 #define HASH_SHIFT          10
 #define HASH_LIST_SIZE      (1 << HASH_SHIFT)
 #define pid_hashfn(x)       (hash32(x, HASH_SHIFT))
@@ -80,6 +86,9 @@ struct proc_struct *idleproc = NULL;
 struct proc_struct *initproc = NULL;
 // current proc
 struct proc_struct *current = NULL;
+
+struct proc_strct *sonproc=NULL;
+
 
 static int nr_process = 0;
 
@@ -419,6 +428,7 @@ put_fs(struct proc_struct *proc) {
 //    7. set the 
 int
 do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
+    
     int ret = -E_NO_FREE_PROC;
     struct proc_struct *proc;
     if (nr_process >= MAX_PROCESS) {
@@ -1235,9 +1245,149 @@ init_main(void *arg) {
     return 0;
 #endif
 }
+#define PIPESIZE 128
+struct pipe {
+    char* addr;
+    int pipe_size;
+    int nread;     // number of bytes read
+    int nwrite;    // number of bytes written
+    int readopen;   // read fd is still open
+    int writeopen;  // write fd is still open
+};
+struct pipe_port{
+    bool port_type;
+    struct pipe *pipe;
+    bool readable;
+    bool writable;
+
+};
+struct pipe *pipe_enty=NULL;
+struct pipe_port *ppt0=NULL;
+struct pipe_port *ppt1=NULL;
+
+
+
+int pipealloc(struct pipe_port *p0, struct pipe_port *p1)
+{
+    pipe_enty = (struct pipe*)kmalloc(sizeof(struct pipe));
+    ppt0 = (struct pipe_port*)kmalloc(sizeof(struct pipe_port));
+    ppt1 = (struct pipe_port*)kmalloc(sizeof(struct pipe_port));
+
+    // 这里没有用预分配，由于 pipe 比较大，直接拿一个页过来，也不算太浪费
+    pipe_enty->addr= kmalloc(128);
+    // 一开始 pipe 可读可写，但是已读和已写内容为 0
+    pipe_enty->readopen = 1;
+    pipe_enty->writeopen = 1;
+    pipe_enty->nwrite = 0;
+    pipe_enty->nread = 0;
+
+
+    // 两个参数分别通过 filealloc 得到，把该 pipe 和这两个文件关连，一端可读，一端可写。读写端控制是 sys_pipe 的要求。
+
+    ppt0->readable = 1;
+    ppt0->writable = 0;
+    ppt0->pipe = pipe_enty;
+
+    ppt1->readable = 0;
+    ppt1->writable = 1;
+    ppt1->pipe = pipe_enty;
+    return 0;
+}
+// LAB CODES for communication
+
+int pipewrite(struct pipe *pi, char* msg, int len)
+{
+    // w 记录已经写的字节数
+    int w = 0;
+    while(w < len){
+        // 若不可读，写也没有意义
+        if(pi->readopen == 0){
+            return -1;
+        }
+
+        if(pi->nwrite == pi->nread + PIPESIZE){
+            // pipe write 端已满，阻塞
+            do_yield();
+        } else {
+            // 一次读的 size 为 min(用户buffer剩余，pipe 剩余写容量，pipe 剩余线性容量)
+            int size = MIN3(
+                len - w,
+                pi->nread + PIPESIZE - pi->nwrite,
+                PIPESIZE - (pi->nwrite % PIPESIZE)
+            );
+            kprintf("size %d\n",size);
+            // 使用 copyin 读入用户 buffer 内容
+            int x=0;
+            for (;x<size;x+=1){
+                *(pi->addr+w+x)=*(msg+x+w);
+            }
+            pi->nwrite += size;
+            w += size;
+        }
+    }
+    return w;
+}
+
+int piperead(struct pipe *pi, int n)
+{
+    // r 记录已经写的字节数
+    int r = 0;
+
+    // 若 pipe 可读内容为空，阻塞或者报错
+    while(pi->nread == pi->nwrite) {
+        if(pi->writeopen)
+            do_yield();
+        else
+            return -1;
+    }
+            uint64_t size = MIN3(
+            n - r,
+            pi->nwrite - pi->nread,
+            PIPESIZE - (pi->nread % PIPESIZE)
+        );
+    while(r < n && size!=0){
+                    kprintf("size %d\n",size);
+
+        // pipe 可读内容为空，返回
+        if(pi->nread == pi->nwrite)
+            break;
+        // 一次写的 size 为：min(用户buffer剩余，可读内容，pipe剩余线性容量)
+
+        // 使用 copyout 写用户内存
+        int x=0;
+        for (;x<size;x+=1){
+                kprintf("%c",*(pi->addr+r+x));
+            }
+        pi->nread += size;
+        r += size;
+    }
+    return r;
+}
+
+static int
+lab5_proc0(void *arg) {
+    struct trapframe *tf =current->tf;
+    uintptr_t stack = tf->tf_regs.reg_r[LOONGARCH_REG_SP];
+    int cur_pid=current->pid;
+    // *ppt0->pipe->addr='a';
+    // kprintf("cur_pid:%d  buffer_addr:%c \n",cur_pid,*ppt0->pipe->addr);
+    // kprintf("addr = %x \n",ppt0->pipe->addr);
+    pipewrite(pipe_enty,"abcde",4);
+    return 0;
+}
+static int
+lab5_proc1(void *arg) {
+    struct trapframe *tf = current->tf;
+    uintptr_t stack = tf->tf_regs.reg_r[LOONGARCH_REG_SP];
+    int cur_pid=current->pid;
+    // *ppt0->pipe->addr='a';
+    // kprintf("cur_pid:%d  buffer_addr:%c \n",cur_pid,*ppt0->pipe->addr);
+    // kprintf("addr = %x \n",ppt0->pipe->addr);
+    piperead(pipe_enty,4);
+    return 0;
+}
 
 // proc_init - set up the first kernel thread idleproc "idle" by itself and 
-//           - create the second kernel thread init_main
 void
 proc_init(void) {
     int i;
@@ -1268,11 +1418,20 @@ proc_init(void) {
     current = idleproc;
 
     int pid = kernel_thread(init_main, NULL, 0);
+    pipealloc(ppt0,ppt1);
+    // buffer=kmalloc(128);
+    int pid0= kernel_thread(lab5_proc0,NULL,0);
+    int pid1= kernel_thread(lab5_proc1,NULL,0);
     if (pid <= 0) {
         panic("create init_main failed.\n");
     }
+    if (pid1 <= 0) {
+        panic("create lab5 failed.\n");
+    }
 
+    // panic(pid2);
     initproc = find_proc(pid);
+    
     set_proc_name(initproc, "init");
 
     assert(idleproc != NULL && idleproc->pid == 0);
